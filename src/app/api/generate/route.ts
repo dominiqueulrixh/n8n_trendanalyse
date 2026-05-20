@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+
 const DEFAULT_TIMEOUT_MS = 6 * 60 * 1000;
 
 function parseStreamingEvents(rawText: string) {
@@ -65,10 +67,68 @@ function unwrapRecord(value: unknown): Record<string, unknown> | null {
   return record;
 }
 
+function parseJsonValue<T>(value: unknown): T | undefined {
+  if (typeof value !== "string") return undefined;
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeImages(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object");
+  }
+
+  if (typeof value === "string") {
+    const parsed = parseJsonValue<unknown>(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is Record<string, unknown> => !!item && typeof item === "object");
+    }
+  }
+
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const direct = record.images ?? record.image_urls ?? record.imageUrls;
+    return normalizeImages(direct);
+  }
+
+  return [];
+}
+
+function findImagesArray(value: unknown): Array<Record<string, unknown>> | undefined {
+  if (!value) return undefined;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findImagesArray(item);
+      if (found) return found;
+    }
+
+    return undefined;
+  }
+
+  if (typeof value !== "object") return undefined;
+
+  const record = value as Record<string, unknown>;
+  const directImages = normalizeImages(record.images ?? record.image_urls ?? record.imageUrls);
+  if (directImages.length > 0) return directImages;
+
+  for (const key of Object.keys(record)) {
+    const found = findImagesArray(record[key]);
+    if (found) return found;
+  }
+
+  return undefined;
+}
+
 function normalizeN8nResponse(data: unknown) {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const record = data as Record<string, unknown>;
     const nodeOutputs = record.nodeOutputs as Record<string, string> | undefined;
+    const images = findImagesArray(record);
 
     if (nodeOutputs) {
       return {
@@ -77,6 +137,7 @@ function normalizeN8nResponse(data: unknown) {
         instagram_content: nodeOutputs["Create Instagram Posts"] ?? nodeOutputs["instagram_posts"],
         visual_ideas: nodeOutputs["Generate Image Prompts"] ?? nodeOutputs["image_prompts"],
         image_url: record.image_url ?? record.imageUrl,
+        images: images ?? [],
         generated_at: record.generated_at ?? record.generatedAt,
         rss_source: record.rss_source,
         images_generated: record.images_generated,
@@ -96,6 +157,8 @@ function normalizeN8nResponse(data: unknown) {
       | undefined;
 
     if (firstItem) {
+      const images = findImagesArray(firstItem);
+
       return {
         items: data,
         trend_analysis: (firstItem.trend_analysis ?? firstItem.trendAnalysis ?? firstItem.analysis) as
@@ -109,6 +172,7 @@ function normalizeN8nResponse(data: unknown) {
           | string
           | undefined,
         image_url: (firstItem.image_url ?? firstItem.imageUrl) as string | undefined,
+        images: images ?? [],
         generated_at: (firstItem.generated_at ?? firstItem.generatedAt) as string | undefined,
         rss_source: firstItem.rss_source as string | undefined,
         images_generated: firstItem.images_generated as number | undefined,
@@ -119,7 +183,7 @@ function normalizeN8nResponse(data: unknown) {
       };
     }
 
-    return { items: data, raw_response: data };
+    return { items: data, images: [], raw_response: data };
   }
 
   const record = unwrapRecord(data);
@@ -144,7 +208,8 @@ function normalizeN8nResponse(data: unknown) {
     rss_source: record.rss_source as string | undefined,
     images_generated: record.images_generated as number | undefined,
     raw_response: data,
-    ...record
+    ...record,
+    images: findImagesArray(record) ?? []
   };
 }
 
@@ -213,7 +278,9 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json(normalizeN8nResponse(data));
+    return NextResponse.json({
+      ...normalizeN8nResponse(data)
+    });
   } catch (error) {
     const message =
       error instanceof Error && error.name === "AbortError"
