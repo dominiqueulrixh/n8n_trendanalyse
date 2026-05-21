@@ -1,0 +1,14 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: n8n-trend-analyse
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET}
+    ports:
+      - "5191:3000"
